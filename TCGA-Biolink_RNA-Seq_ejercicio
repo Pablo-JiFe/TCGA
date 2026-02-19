@@ -1,0 +1,203 @@
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+library(DESeq2)
+library(dplyr)
+library(apeglm)
+library(tidyverse)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+
+# Query con base a RNA-Seq y a 3 casos y 3 controles
+
+tcga_rna <- GDCquery("TCGA-BRCA", 
+                     data.category = "Transcriptome Profiling",
+                     access = "open",
+                     experimental.strategy = "RNA-Seq",
+                     workflow.type = "STAR - Counts",
+                     barcode = c("TCGA-BH-A18H-01A-11R-A12D-07", "TCGA-E2-A14P-01A-31R-A12D-07", "TCGA-AN-A04A-01A-21R-A034-07", "TCGA-GI-A2C8-11A-22R-A16F-07", "TCGA-BH-A0BW-11A-12R-A115-07", "TCGA-BH-A1FE-11B-14R-A13Q-07")
+)
+
+# Descargar por default metodo api, descarga dentro de la carpeta GDCdata en el wd
+
+GDCdownload(tcga_rna)
+
+# Prepara los datos para su utilización, lo convierte en un summarizedExperiment
+
+tcga_brca_data <- GDCprepare(tcga_rna)
+
+# Matriz con los datos en el formato que nos interesa
+
+brca_matrix <- assay(tcga_brca_data, "unstranded")
+
+# Aqui me aseguro de tener los 3 tumores primarios y los 3 tejidos sanos
+
+table(tcga_brca_data$sample_type)
+
+# Ya que el tcga_brca_data al ser un summarizedExperiment es conformado por rownames (genes)
+# colnames (samples) y colData (metadatos)
+
+# Extraigo el colData a un nuevo objeto
+
+pre_metadata <- colData(tcga_brca_data)
+
+class(pre_metadata)
+
+# Es a esta a la que le puedo hacer el subset de tal forma que solo me quedo
+# con los samples y su descripción de si son tumor o tejido normal
+
+metadata <- subset(pre_metadata, select = "definition")
+
+# A continuación me aseguro de que los nombres de las columnas de la matriz
+# (es decir los samples) y de las filas de los metadatos (igual los samples)
+# coincidan y esten ordenadas igual
+
+all(colnames(brca_matrix) %in% rownames(metadata))
+
+all(colnames(brca_matrix) == rownames(metadata))
+
+
+# Generar el DESeq object
+
+dds <- DESeqDataSetFromMatrix(countData = brca_matrix,
+                              colData = metadata, 
+                              design = ~ definition)
+dds
+
+
+# Prefiltrar a aquellos genes que tengan suma de lectura menor a 10
+
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+
+dds
+
+# Definir nivel de factor
+
+dds$definition <- relevel(dds$definition, ref = "Solid Tissue Normal")
+
+
+# Analisis de expresión diferencial
+dds <- DESeq(dds)
+
+
+# Explorar resultados
+res <- results(dds, contrast = c("definition", "Primary solid Tumor", "Solid Tissue Normal"))
+
+summary(res)
+
+# Contrastes
+resultsNames(dds)
+
+# Log fold change
+
+resLFC <- lfcShrink(dds, coef = "definition_Primary.solid.Tumor_vs_Solid.Tissue.Normal", type = "apeglm")
+
+# MA plot
+plotMA(res)
+
+# MA plot del log fold change
+plotMA(resLFC, ylim = c (-2, 2))
+
+# Dispersión
+
+plotDispEsts(dds)
+
+# Plot de genes que cumplan con algun statement logico
+
+plotCounts(dds, gene = which.min(res$padj), intgroup = "definition")
+plotCounts(dds, gene = which.max(res$padj), intgroup = "definition")
+plotCounts(dds, gene = which.min(res$log2FoldChange), intgroup = "definition")
+plotCounts(dds, gene = which.max(res$log2FoldChange), intgroup = "definition")
+
+# Transformación estabilizadora de varianza
+
+vsd <- vst(dds, blind = FALSE)
+
+# PCA
+plotPCA(vsd, intgroup = "definition")
+
+# Heatmap que no se como interpretar
+
+sampleDist <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDist)
+colnames(sampleDistMatrix)
+heatmap(sampleDistMatrix)
+
+#----------------------------------------------------------------------
+# Biocodnuctor
+#----------------------------------------------------------------------
+
+# Los nombres de las columnas tienen el nombre de ENSMBL con todo y version
+# lo cual aparentemente no le gusta a biomart por lo que se debe de quitar
+# los datos mas alla del punto
+
+g <- gsub("\\..*", "", rownames(res)) 
+
+# Lo asigno a nueva columna porque no se si importe la versión de ENSEMBL como 
+# para andar borrando su nomenclatura
+
+res$ensmbl <- g
+
+res$symbol <- mapIds(org.Hs.eg.db,
+                     keys=res$ensmbl, # A donde va a buscar
+                     column="SYMBOL", # Nueva columna con ese formato
+                     keytype="ENSEMBL", # Que formato va a buscar en keys
+                     multiVals="first") # Que hacer si hay varios del mismo Key
+res$entrez <- mapIds(org.Hs.eg.db,
+                     keys=res$ensmbl, 
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+res$name <-   mapIds(org.Hs.eg.db,
+                     keys=res$ensmbl, 
+                     column="GENENAME",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+head(res, 10)
+
+# Para graficar
+
+library(pathview)
+library(gage)
+library(gageData)
+
+data(kegg.sets.hs) # Codigo Entrez agrupado a vias metabolicas
+data(sigmet.idx.hs) 
+kegg.sets.hs <- kegg.sets.hs[sigmet.idx.hs] # FIltra para evitar otras bases de KEGG no metabolicas
+head(kegg.sets.hs, 3)
+
+foldchanges <- res$log2FoldChange  # Asigna unicamente los flog fold change a un nuevo objeto
+names(foldchanges) <- res$entrez # Junta lo anterior con el codigo de Entrez correspondiente
+head(foldchanges)
+
+# Nombra las vias con respecto al fold change
+
+keggres <- gage(foldchanges, 
+                gsets = kegg.sets.hs, 
+                same.dir = TRUE)
+
+lapply(keggres, head)
+
+#--------------------------------------------------------------------------------
+# Sigo intentando entender que esta sucediendo de aqui en adelante
+
+keggrespathways <- data.frame(id = rownames(keggres$greater), keggres$greater) %>% 
+  tibble::as_tibble() %>% 
+  filter(row_number() <= 5) %>% 
+  .$id %>% 
+  as.character()
+keggrespathways
+
+
+keggresids <- substr(keggrespathways, start=1, stop=8)
+keggresids
+
+plot_pathway <- function(pid) pathview(gene.data = foldchanges, 
+                                       pathway.id = pid, 
+                                       species = "hsa", new.signature=FALSE)
+
+tmp <- sapply(keggresids, 
+              function(pid) pathview(gene.data=foldchanges, 
+                                     pathway.id=pid, species="hsa"))
