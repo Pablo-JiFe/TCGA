@@ -7,7 +7,11 @@ library(tidyverse)
 library(AnnotationDbi)
 library(org.Hs.eg.db)
 
-# Query con base a RNA-Seq y a 3 casos y 3 controles
+#-------------------------------------------------------------------------------
+# 1. Obtención de datos
+#-------------------------------------------------------------------------------
+
+# 1.1 Query con base a RNA-Seq y a 3 casos y 3 controles
 
 tcga_rna <- GDCquery("TCGA-BRCA", 
                      data.category = "Transcriptome Profiling",
@@ -17,46 +21,50 @@ tcga_rna <- GDCquery("TCGA-BRCA",
                      barcode = c("TCGA-BH-A18H-01A-11R-A12D-07", "TCGA-E2-A14P-01A-31R-A12D-07", "TCGA-AN-A04A-01A-21R-A034-07", "TCGA-GI-A2C8-11A-22R-A16F-07", "TCGA-BH-A0BW-11A-12R-A115-07", "TCGA-BH-A1FE-11B-14R-A13Q-07")
 )
 
-# Descargar por default metodo api, descarga dentro de la carpeta GDCdata en el wd
+# 1.1.1 Observar lo que extrajo
+
+getResults(tcga_rna)
+
+# 1.2 Descargar por default metodo api, descarga dentro de la carpeta GDCdata en el wd
 
 GDCdownload(tcga_rna)
 
-# Prepara los datos para su utilización, lo convierte en un summarizedExperiment
+# 1.3 Prepara los datos para su utilización, lo convierte en un summarizedExperiment
 
 tcga_brca_data <- GDCprepare(tcga_rna)
 
-# Matriz con los datos en el formato que nos interesa
-
-brca_matrix <- assay(tcga_brca_data, "unstranded")
-
-# Aqui me aseguro de tener los 3 tumores primarios y los 3 tejidos sanos
+# 1.4 Aqui me aseguro de tener los 3 tumores primarios y los 3 tejidos sanos
 
 table(tcga_brca_data$sample_type)
 
-# Ya que el tcga_brca_data al ser un summarizedExperiment es conformado por rownames (genes)
-# colnames (samples) y colData (metadatos)
+#-------------------------------------------------------------------------------
+# 2. Generar DESeq object
+#-------------------------------------------------------------------------------
 
-# Extraigo el colData a un nuevo objeto
+# 2.1 Matriz de conteo con los datos en el formato que nos interesa (countdata)
+
+brca_matrix <- assay(tcga_brca_data, "unstranded")
+
+# 2.2 Obtención de metadatos
+# 2.2.1 Convierto el summarizedExperiment obtenido de extraer solo la colData en un data frame 
 
 pre_metadata <- colData(tcga_brca_data)
 
-class(pre_metadata)
-
-# Es a esta a la que le puedo hacer el subset de tal forma que solo me quedo
-# con los samples y su descripción de si son tumor o tejido normal
+# 2.2.2 Es a esta a la que le puedo hacer el subset de tal forma que solo me quedo
+      # con los samples y su descripción de si son tumor o tejido normal
 
 metadata <- subset(pre_metadata, select = "definition")
 
-# A continuación me aseguro de que los nombres de las columnas de la matriz
-# (es decir los samples) y de las filas de los metadatos (igual los samples)
-# coincidan y esten ordenadas igual
+# 2.2.3 A continuación me aseguro de que los nombres de las columnas de la matriz
+      # (es decir los samples) y de las filas de los metadatos (igual los samples)
+      # coincidan y esten ordenadas igual
 
 all(colnames(brca_matrix) %in% rownames(metadata))
 
 all(colnames(brca_matrix) == rownames(metadata))
 
 
-# Generar el DESeq object
+# 2.3 Generar el DESeq object
 
 dds <- DESeqDataSetFromMatrix(countData = brca_matrix,
                               colData = metadata, 
@@ -64,7 +72,7 @@ dds <- DESeqDataSetFromMatrix(countData = brca_matrix,
 dds
 
 
-# Prefiltrar a aquellos genes que tengan suma de lectura menor a 10
+# 2.4 Prefiltrar a aquellos genes que tengan suma de lectura menor a 10
 
 keep <- rowSums(counts(dds)) >= 10
 dds <- dds[keep,]
@@ -72,72 +80,119 @@ dds <- dds[keep,]
 
 dds
 
-# Definir nivel de factor
+# 2.5 Definir nivel de factor
 
 dds$definition <- relevel(dds$definition, ref = "Solid Tissue Normal")
 
+#-------------------------------------------------------------------------------
+# 3. Analisis de expresión diferencial
+#-------------------------------------------------------------------------------
 
-# Analisis de expresión diferencial
+# 3.1 Analisis de expresión diferencial
 dds <- DESeq(dds)
 
 
-# Explorar resultados
+#-------------------------------------------------------------------------------
+# 4. Explorar resultados
+#-------------------------------------------------------------------------------
+
+# 4.1 Generar resultados
+
 res <- results(dds, contrast = c("definition", "Primary solid Tumor", "Solid Tissue Normal"))
 
 summary(res)
 
-# Contrastes
+# 4.1.1 p mas estricta
+
+res0.01 <- results(dds, alpha = 0.01)
+summary(res0.01)
+
+# 4.2 Log fold change
+
+# 4.2.1 Observar contrastes
 resultsNames(dds)
 
-# Log fold change
+# 4.2.2 Log fold change
 
 resLFC <- lfcShrink(dds, coef = "definition_Primary.solid.Tumor_vs_Solid.Tissue.Normal", type = "apeglm")
 
-# MA plot
-plotMA(res)
+summary(resLFC)
 
-# MA plot del log fold change
-plotMA(resLFC, ylim = c (-2, 2))
-
-# Dispersión
-
-plotDispEsts(dds)
-
-# Plot de genes que cumplan con algun statement logico
-
-plotCounts(dds, gene = which.min(res$padj), intgroup = "definition")
-plotCounts(dds, gene = which.max(res$padj), intgroup = "definition")
-plotCounts(dds, gene = which.min(res$log2FoldChange), intgroup = "definition")
-plotCounts(dds, gene = which.max(res$log2FoldChange), intgroup = "definition")
-
-# Transformación estabilizadora de varianza
+# 4.3 Transformación estabilizadora de varianza
 
 vsd <- vst(dds, blind = FALSE)
 
-# PCA
+# 4.4 Ejemplos de obtención de datos especificos
+
+res$log2FoldChange[which.min(res$padj)]
+
+rownames(dds)[res$log2FoldChange == min(res$log2FoldChange)]
+
+res$log2FoldChange[rownames(res) == "ENSG00000177354.12"]
+
+res["ENSG00000154415.8",]
+
+#-------------------------------------------------------------------------------
+# 5. Graficar
+#-------------------------------------------------------------------------------
+
+# 5.1 Dispersión
+
+plotDispEsts(dds)
+
+# 5.2 MA plot
+
+plotMA(res)
+
+plotMA(res0.01)
+
+# 5.2.2 MA plot del log fold change
+
+plotMA(resLFC, ylim = c (-2, 2))
+
+
+# 5.3 Plot de genes que cumplan con algun statement logico
+
+plotCounts(dds, gene = which.min(res$padj), intgroup = "definition")
+
+plotCounts(dds, gene = which.max(res$padj), intgroup = "definition")
+
+plotCounts(dds, gene = which.min(res$log2FoldChange), intgroup = "definition")
+
+plotCounts(dds, gene = which.max(res$log2FoldChange), intgroup = "definition")
+
+
+# 5.4 PCA
+
 plotPCA(vsd, intgroup = "definition")
 
-# Heatmap que no se como interpretar
+# 5.5 Heatmap que no se como interpretar
 
-sampleDist <- dist(t(assay(vsd)))
+sampleDist <- dist(t(assay(vsd))) # 
+
 sampleDistMatrix <- as.matrix(sampleDist)
+
 colnames(sampleDistMatrix)
+
 heatmap(sampleDistMatrix)
 
-#----------------------------------------------------------------------
-# Biocodnuctor
-#----------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# 6. Bioconductor: agregar nombres de Kegg
+#-------------------------------------------------------------------------------
 
-# Los nombres de las columnas tienen el nombre de ENSMBL con todo y version
-# lo cual aparentemente no le gusta a biomart por lo que se debe de quitar
-# los datos mas alla del punto
+# 6.1 Eliminar la versión de la nomenclatura del gen:
+      # Los nombres de las columnas tienen el nombre de ENSMBL con todo y version
+      # lo cual aparentemente no le gusta a biomart por lo que se debe de quitar
+      # los datos mas alla del punto
 
-g <- gsub("\\..*", "", rownames(res)) 
+g <- gsub("\\..*", "", rownames(res))
 
 # Lo asigno a nueva columna porque no se si importe la versión de ENSEMBL como 
 # para andar borrando su nomenclatura
 
 res$ensmbl <- g
+
+# 6.2 Agregar columnas con los nombres, simbolos y ENTREZID de kegg
 
 res$symbol <- mapIds(org.Hs.eg.db,
                      keys=res$ensmbl, # A donde va a buscar
@@ -157,7 +212,8 @@ res$name <-   mapIds(org.Hs.eg.db,
 
 head(res, 10)
 
-# Para graficar
+# 6.3 Graficar con pathview
+
 
 library(pathview)
 library(gage)
@@ -172,16 +228,13 @@ foldchanges <- res$log2FoldChange  # Asigna unicamente los flog fold change a un
 names(foldchanges) <- res$entrez # Junta lo anterior con el codigo de Entrez correspondiente
 head(foldchanges)
 
-# Nombra las vias con respecto al fold change
+# NO ENTIENDO BIEN QUE SUCEDE AQUI
 
 keggres <- gage(foldchanges, 
                 gsets = kegg.sets.hs, 
                 same.dir = TRUE)
 
-lapply(keggres, head)
-
-#--------------------------------------------------------------------------------
-# Sigo intentando entender que esta sucediendo de aqui en adelante
+lapply(keggres, head) # Observar la head de todas las vias con sus foldchanges
 
 keggrespathways <- data.frame(id = rownames(keggres$greater), keggres$greater) %>% 
   tibble::as_tibble() %>% 
@@ -201,3 +254,25 @@ plot_pathway <- function(pid) pathview(gene.data = foldchanges,
 tmp <- sapply(keggresids, 
               function(pid) pathview(gene.data=foldchanges, 
                                      pathway.id=pid, species="hsa"))
+
+
+#-------------------------------------------------------------------------------
+# 6. Bioconductor: agregar nombres de GO
+#-------------------------------------------------------------------------------
+
+data(go.sets.hs)
+data(go.subs.hs)
+gobpsets = go.sets.hs[go.subs.hs$BP]
+gobpres = gage(foldchanges, gsets=gobpsets, same.dir=TRUE)
+lapply(gobpres, head)
+
+gobprespathway <- data.frame(id = rownames(gobpres$greater), gobpres$greater) %>% 
+  tibble::as_tibble() %>% 
+  filter(row_number() <= 5) %>% 
+  .$id %>% 
+  as.character()
+gobprespathway
+
+gobpresids <- substr(gobprespathway, start=1, stop=11)
+gobpresids
+
