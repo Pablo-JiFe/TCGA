@@ -1,0 +1,34 @@
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+
+# 1.- Metadata ----------------------------------------------------------------
+
+# 1.1 Assign metadata to object called metadata
+
+metadata <- readxl::read_xlsx("Datos/TCIA_TCGA-BRCA_09-16-2015-nbia-digest-1(1).xlsx")
+
+# 1.2 Eliminate duplicates
+
+metadata <- metadata[!duplicated(metadata$`Patient ID`), ]
+
+
+# 2.- Clinical metadata --------------------------------------------------------
+
+
+# 2.1 Query to obtain clinical data
+
+tcga_clinical <- GDCquery_clinic("TCGA-BRCA", 
+                               type = "clinical")
+
+# 2.2 Asign to a new object
+
+clinical_df <- tcga_clinical
+
+# 2.3.1 Maintain only those data that correspond to patients in the metadata
+
+clinical_df <- clinical_df[clinical_df$submitter_id %in% metadata$`Patient ID`,]
+
+all(clinical_df$submitter_id %in% metadata$`Patient ID`) # 2.3.2 Prove that all patients are in both objects
